@@ -2,7 +2,7 @@
   ******************************************************************************
   * @file    voodoospark.cpp
   * @author  Chris Williams
-  * @version V2.5.0
+  * @version V2.6.0-pre
   * @date    16-Nov-2014
   * @brief   Exposes the firmware level API through a TCP Connection initiated
   *          to the spark device
@@ -142,6 +142,8 @@ bool isConnected = false;
 byte buffer[MAX_DATA_BYTES];
 byte cached[4];
 byte reporting[20];
+byte analogReporting[7];
+byte portValues[2];
 
 int reporters = 0;
 int bytesRead = 0;
@@ -177,25 +179,24 @@ int ToServoIndex(int pin) {
   if (pin >= 14) return pin - 10;
 }
 
-void send(int action, int pin, int value) {
+void send(int action, int pinOrPort, int pinOrPortValue) {
   // See https://github.com/voodootikigod/voodoospark/issues/20
   // to understand why the send function splits values
   // into two 7-bit bytes before sending.
   //
-  int lsb = value & 0x7f;
-  int msb = value >> 0x07 & 0x7f;
+  int lsb = pinOrPortValue & 0x7f;
+  int msb = pinOrPortValue >> 0x07 & 0x7f;
 
   server.write(action);
-  server.write(pin);
-
-  // Send the LSB
+  server.write(pinOrPort);
   server.write(lsb);
-  // Send the MSB
   server.write(msb);
+
+  // [action, pinOrPort, lsb, msb]
 
   // #if DEBUG
   // Serial.print("SENT: ");
-  // Serial.print(value);
+  // Serial.print(pinOrPortValue);
   // Serial.print(" -> [ ");
   // Serial.print(lsb);
   // Serial.print(", ");
@@ -206,37 +207,81 @@ void send(int action, int pin, int value) {
 
 void report() {
   if (isConnected) {
-    for (int i = 0; i < 20; i++) {
-      if (reporting[i]) {
-        // #if DEBUG
-        // Serial.print("Reporting: ");
-        // Serial.print(i, DEC);
-        // Serial.println(reporting[i], DEC);
-        // #endif
+    int pin;
+    int pinValue;
+    int i;
 
-        int dr = (reporting[i] & 1);
-        int ar = (reporting[i] & 2);
+    for (int k = 0; k < 2; k++) {
+      // D0-D7
+      // portValues[0] = 0;
+      // A0-A7
+      // portValues[1] = 0;
+      portValues[k] = 0;
 
-        if (i < 10 && dr) {
-          send(DIGITAL_READ, i, digitalRead(i));
-        } else {
-          if (dr) {
-            send(DIGITAL_READ, i, digitalRead(i));
-          } else {
-            if (ar) {
-              int adc = analogRead(i);
-              // #if DEBUG
-              // Serial.print("Analog Report (pin, adc): ");
-              // Serial.print(i, DEC);
-              // Serial.print(" ");
-              // Serial.println(adc, DEC);
-              // #endif
-              send(ANALOG_READ, i, adc);
-            }
+      for (i = 0; i < 8; i++) {
+        pin = (k * 10) + i;
+
+        if (reporting[pin] == 1) {
+          pinValue = digitalRead(pin);
+
+          if (pinValue) {
+            portValues[k] = (portValues[k] | pinValue) << i;
           }
         }
       }
+      #if DEBUG
+      Serial.print("Reporting: ");
+      Serial.print(k, DEC);
+      Serial.println(portValues[k], DEC);
+      #endif
+
+      send(REPORTING, k, portValues[k]);
     }
+
+    for (i = 10; i < 18; i++) {
+      if (analogReporting[i] == 1) {
+        int adc = analogRead(i);
+        send(ANALOG_READ, i, adc);
+        delay(1);
+      }
+    }
+
+
+    /// for (int i = 0; i < 18; i++) {
+    //   if (i == 8 || i == 9) {
+    //     continue;
+    //   }
+
+    //   if (reporting[i]) {
+    //     // #if DEBUG
+    //     // Serial.print("Reporting: ");
+    //     // Serial.print(i, DEC);
+    //     // Serial.println(reporting[i], DEC);
+    //     // #endif
+
+    //     int dr = (reporting[i] & 1);
+    //     int ar = (reporting[i] & 2);
+
+    //     if (i < 10 && dr) {
+    //       send(DIGITAL_READ, i, digitalRead(i));
+    //     } else {
+    //       if (dr) {
+    //         send(DIGITAL_READ, i, digitalRead(i));
+    //       } else {
+    //         if (ar) {
+    //           int adc = analogRead(i);
+    //           // #if DEBUG
+    //           // Serial.print("Analog Report (pin, adc): ");
+    //           // Serial.print(i, DEC);
+    //           // Serial.print(" ");
+    //           // Serial.println(adc, DEC);
+    //           // #endif
+    //           send(ANALOG_READ, i, adc);
+    //         }
+    //       }
+    //     }
+    //   }
+    // }
   }
 }
 
@@ -259,6 +304,8 @@ void restore() {
   memset(&buffer[0], 0, MAX_DATA_BYTES);
   memset(&cached[0], 0, 4);
   memset(&reporting[0], 0, 20);
+  memset(&analogReporting[0], 0, 7);
+  memset(&portValues[0], 0, 2);
 
   for (int i = 0; i < 8; i++) {
     if (servos[i].attached()) {
@@ -314,7 +361,7 @@ void processInput() {
       #if DEBUG
       Serial.print("Bytes Read: ");
       Serial.println(bytesRead, DEC);
-      Serial.print("Bytes Using: ");
+      Serial.print("Bytes Consumed: ");
       Serial.println(bytesExpecting, DEC);
       #endif
     }
@@ -356,14 +403,15 @@ void processInput() {
       case PIN_MODE:  // pinMode
         pin = cached[1];
         mode = cached[2];
+
         #if DEBUG
         Serial.print("PIN: ");
         Serial.println(pin);
         Serial.print("MODE: ");
-        Serial.println(mode, HEX);
+        Serial.println(mode, DEC);
         #endif
 
-        if (servos[ToServoIndex(pin)].attached()) {
+        if (configs[pin] == 0x04) {
           servos[ToServoIndex(pin)].detach();
         }
 
@@ -372,20 +420,25 @@ void processInput() {
         if (mode == 0x00) {
           // INPUT
           pinMode(pin, INPUT_PULLDOWN);
-        } else if (mode == 0x01) {
+        }
+        if (mode == 0x01) {
           // OUTPUT
           pinMode(pin, OUTPUT);
-        } else if (mode == 0x02) {
+        }
+        if (mode == 0x02) {
           // ANALOG INPUT
           pinMode(pin, INPUT);
-        } else if (mode == 0x03) {
+        }
+        if (mode == 0x03) {
           // ANALOG (PWM) OUTPUT
           pinMode(pin, OUTPUT);
-        } else if (mode == 0x04) {
+        }
+        if (mode == 0x04) {
           // SERVO
           pinMode(pin, OUTPUT);
           servos[ToServoIndex(pin)].attach(pin);
         }
+
         break;
 
       case DIGITAL_WRITE:  // digitalWrite
@@ -437,7 +490,6 @@ void processInput() {
         break;
 
       case REPORTING: // Add pin to
-        reporters++;
         pin = cached[1];
         val = cached[2];
         #if DEBUG
@@ -446,7 +498,16 @@ void processInput() {
         Serial.print(", ");
         Serial.println(val, DEC);
         #endif
-        reporting[pin] = val;
+
+        if (analogReporting[pin] == 0 || reporting[pin] == 0) {
+          reporters++;
+        }
+
+        if (val == 2) {
+          analogReporting[pin] = 1;
+        } else {
+          reporting[pin] = 1;
+        }
         break;
 
       case SET_SAMPLE_INTERVAL: // set the sampling interval in ms
@@ -693,7 +754,23 @@ void loop() {
 
     isConnected = true;
 
-    // Process incoming bytes first
+
+    // Reporting must be limited to at least every ~100ms
+    // Otherwise the spark becomes unreliable and
+    // exhibits a higher crash frequency.
+    nowms = millis();
+    if (nowms - lastms > sampleInterval && reporters > 0) {
+      #if DEBUG
+      Serial.print("REPORTING AT: ");
+      Serial.println(nowms, DEC);
+      Serial.println(reporters, DEC);
+      #endif
+
+      lastms = nowms;
+      report();
+    }
+
+    // Now Process incoming bytes
     available = client.available();
 
     if (available > 0) {
@@ -714,17 +791,6 @@ void loop() {
       #endif
 
       processInput();
-    }
-
-
-    // Reporting must be limited to every ~100ms
-    // Otherwise the spark becomes unreliable and
-    // exhibits a higher crash frequency.
-    nowms = millis();
-    if (nowms - lastms > sampleInterval && reporters > 0) {
-      // possible just assign the value of nowms?
-      lastms += sampleInterval;
-      report();
     }
   } else {
     // Upon disconnection, restore init state.
