@@ -411,9 +411,9 @@ void processInput() {
         Serial.println(mode, DEC);
         #endif
 
-        if (configs[pin] == 0x04) {
-          servos[ToServoIndex(pin)].detach();
-        }
+        // if (configs[pin] == 0x04) {
+        //   servos[ToServoIndex(pin)].detach();
+        // }
 
         // The following modes were derived
         // from uses in core-firmware.
